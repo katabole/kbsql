@@ -1,4 +1,4 @@
-package main
+package kbsql
 
 import (
 	"github.com/jmoiron/sqlx"
