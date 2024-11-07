@@ -1,6 +1,9 @@
 package kbsql
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/jmoiron/sqlx"
 )
 
@@ -12,12 +15,12 @@ func PostgresCleanDB(db *sqlx.DB) error {
 		FROM information_schema.sequences
 		WHERE sequence_schema NOT IN ('information_schema, pg_catalog')`)
 	if err != nil {
-		return err
+		return fmt.Errorf("error selecting sequences from information schema: %w", err)
 	}
 
 	for _, s := range sequences {
 		if _, err := db.Exec("ALTER SEQUENCE " + s + " RESTART WITH 1"); err != nil {
-			return err
+			return fmt.Errorf("error restarting sequence %s: %w", s, err)
 		}
 	}
 
@@ -30,12 +33,31 @@ func PostgresCleanDB(db *sqlx.DB) error {
 		FROM information_schema.tables
 		WHERE table_schema NOT IN ('information_schema', 'pg_catalog') AND table_type = 'BASE TABLE'`)
 	if err != nil {
-		return err
+		return fmt.Errorf("error selecting tables from information schema: %w", err)
 	}
 
-	for _, table := range tables {
-		if _, err := db.Exec("DELETE FROM " + table.Schema + "." + table.Name + " CASCADE"); err != nil {
-			return err
+	// Though a little hackish, this seems to be the easiest way to clear all the tables of a DB which has foreign key
+	// relationships. We just try clearing them all repeatedly up to a sane limit of attempts.
+	deletesAttempted := 0
+	for {
+		var lastError error
+		for _, table := range tables {
+			if _, err := db.Exec("DELETE FROM " + table.Schema + "." + table.Name + " CASCADE"); err != nil {
+				lastError = err
+				if !strings.Contains(err.Error(), "foreign key constraint") {
+					return fmt.Errorf("error deleting from table %s.%s: %w", table.Schema, table.Name, err)
+				}
+			}
+		}
+
+		deletesAttempted++
+		// If you need to increase this, make a PR and I'll give you the "ridiculous-est number of foreign keys" award.
+		if deletesAttempted > 100 {
+			return fmt.Errorf("error deleting from tables: too many attempts, last error: %w", lastError)
+		}
+
+		if lastError == nil {
+			break
 		}
 	}
 	return nil
