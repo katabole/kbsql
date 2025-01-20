@@ -2,6 +2,7 @@ package kbsql
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -58,6 +59,42 @@ func PostgresCleanDB(db *sqlx.DB) error {
 
 		if lastError == nil {
 			break
+		}
+	}
+	return nil
+}
+
+// PostgresCreateDBIfNotExistsByURL ensures the given database exists, creating it if it doesn't. Generally for dev/test
+// databases. It takes a URL connection string like `postgres://joe:secret@kb.example.com:5432/testdb`
+func PostgresCreateDBIfNotExistsByURL(dbURL string) error {
+	// First parse it and remove the database name, if we leave it there and the DB doesn't exist yet then connecting to
+	// the database will fail
+	parsed, err := url.Parse(dbURL)
+	if err != nil {
+		return fmt.Errorf("error parsing dbURL: %w", err)
+	}
+
+	dbName := strings.TrimPrefix(parsed.Path, "/")
+	if dbName == "" {
+		return fmt.Errorf("no database name found in dbURL: %s", dbURL)
+	}
+
+	connURL := parsed
+	connURL.Path = ""
+
+	db, err := sqlx.Connect("pgx", connURL.String())
+	if err != nil {
+		return fmt.Errorf("error connecting: %w", err)
+	}
+
+	var results []int
+	if err := db.Select(&results, `SELECT 1 FROM pg_database WHERE datname = $1`, dbName); err != nil {
+		return fmt.Errorf("error selecting tables from information schema: %w", err)
+	}
+	if len(results) == 0 {
+		_, err := db.Exec("CREATE DATABASE " + dbName)
+		if err != nil {
+			return fmt.Errorf("error creating database %s: %w", dbName, err)
 		}
 	}
 	return nil
